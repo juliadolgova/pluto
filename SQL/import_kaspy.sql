@@ -1,0 +1,168 @@
+
+SET @registry_name = '%(registry_name)s'$$
+SET @registry_id = (SELECT REGISTRY_ID FROM registry WHERE PROG = 2 AND NAME = @registry_name)$$
+
+DROP TABLE IF EXISTS tmp_kaspy_%(registry_name)s$$
+DROP TABLE IF EXISTS tmp_paynode_%(registry_name)s$$
+DROP TABLE IF EXISTS tmp_kaspy_auto_%(registry_name)s$$
+DROP TABLE IF EXISTS tmp_kaspy_all_services_%(registry_name)s$$
+
+
+CREATE TEMPORARY TABLE tmp_kaspy_%(registry_name)s (
+  `PAYNUMBER` INT(11) DEFAULT NULL,
+  `ORDER_TYPE` INT(11) DEFAULT NULL,
+  `STORNO_FOR` INT(11) DEFAULT NULL,
+  `STATUS` INT(11) DEFAULT NULL,
+  `STATUS_TIME` DATETIME DEFAULT NULL,
+  `ACCOUNT` VARCHAR(20) DEFAULT NULL,
+  `FIO` VARCHAR(100) DEFAULT NULL,
+  `ADDRESS` VARCHAR(150) DEFAULT NULL,
+  `ORGANIZATION_NAME` VARCHAR(100) DEFAULT NULL,
+  `ORGANIZATION_CODE` VARCHAR(100) DEFAULT NULL,
+  `EXTERNAL_ID` VARCHAR(25) DEFAULT NULL,
+  `EXTERNAL_TIME` DATETIME DEFAULT NULL,
+  `BACKEND_TIME` DATETIME DEFAULT NULL,
+  `TOTAL_SUMM` DECIMAL(12,2) DEFAULT NULL,
+  `PAYNODE_CODE` INT(11) DEFAULT NULL,
+  `PAYNODE_ADDRESS` VARCHAR(150) DEFAULT NULL,
+  `CASHIER` VARCHAR(80) DEFAULT NULL,
+  `FEE` DECIMAL(12,2) DEFAULT NULL,
+  `TOTAL_SUMM_NO_FEE` DECIMAL(12,2) DEFAULT NULL,
+  `SERVICE_CODE` VARCHAR(150) DEFAULT NULL,
+  `SERVICE_TYPE` VARCHAR(150) DEFAULT NULL,
+  `SERVICE_SUMM_NO_FEE` DECIMAL(12,2) DEFAULT NULL,
+  `SERVICE_NAME` VARCHAR(150) DEFAULT NULL 
+) ENGINE=INNODB DEFAULT CHARSET=UTF8$$
+
+LOAD DATA INFILE '%(path)s'
+INTO TABLE tmp_kaspy_%(registry_name)s
+CHARACTER SET CP1251 
+FIELDS TERMINATED BY ';'  
+LINES TERMINATED BY '\n'
+(PAYNUMBER, ORDER_TYPE, STORNO_FOR, STATUS, STATUS_TIME, ACCOUNT, FIO, ADDRESS, ORGANIZATION_NAME, ORGANIZATION_CODE, 
+EXTERNAL_ID, EXTERNAL_TIME, BACKEND_TIME, TOTAL_SUMM, PAYNODE_CODE, PAYNODE_ADDRESS, CASHIER, FEE, TOTAL_SUMM_NO_FEE, 
+SERVICE_CODE, SERVICE_TYPE, SERVICE_SUMM_NO_FEE, @service_name)
+SET SERVICE_NAME = LEFT(@service_name, 150)$$
+
+
+-- TODO Перенести сразу после вызова xmlrpc
+UPDATE registry 
+SET PAYMENTS_COUNT = (SELECT COUNT(DISTINCT PAYNUMBER) FROM tmp_kaspy_%(registry_name)s)
+WHERE REGISTRY_ID = @registry_id$$
+
+-- ----------------- Исправляем под свою схему ----------------
+UPDATE tmp_kaspy_%(registry_name)s 
+SET 
+	TOTAL_SUMM = -ABS(TOTAL_SUMM),
+	FEE = -ABS(FEE),
+	TOTAL_SUMM_NO_FEE = -ABS(TOTAL_SUMM_NO_FEE),
+	SERVICE_SUMM_NO_FEE = -ABS(SERVICE_SUMM_NO_FEE)
+WHERE tmp_kaspy_%(registry_name)s.ORDER_TYPE IN (1, 5)$$
+
+CREATE TEMPORARY TABLE tmp_kaspy_auto_%(registry_name)s AS
+SELECT 
+	PAYNUMBER, 
+    ORGANIZATION_CODE,
+	TOTAL_SUMM - SUM(SERVICE_SUMM_NO_FEE) AS SERVICE_SUMM_NO_FEE, 
+	'auto' AS SERVICE_CODE, 
+	'Автораспределение' AS SERVICE_NAME
+FROM tmp_kaspy_%(registry_name)s 
+GROUP BY PAYNUMBER, ORGANIZATION_CODE, TOTAL_SUMM 
+HAVING TOTAL_SUMM - SUM(SERVICE_SUMM_NO_FEE)<>0$$
+
+-- --------- Актуализируем Организации ------------
+INSERT INTO organization (NAME, NAME_KASPY, CODE_KASPY)
+SELECT DISTINCT ORGANIZATION_NAME, ORGANIZATION_NAME, ORGANIZATION_CODE 
+FROM tmp_kaspy_%(registry_name)s 
+WHERE ORGANIZATION_CODE NOT IN (SELECT CODE_KASPY FROM organization WHERE CODE_KASPY IS NOT NULL)
+ORDER BY ORGANIZATION_NAME$$
+
+
+-- --------- Актуализируем Услуги ------------
+-- возможно потребуется обновлять названия. сделать аналогично с ППП
+CREATE TEMPORARY TABLE tmp_kaspy_all_services_%(registry_name)s AS
+SELECT DISTINCT ORGANIZATION_CODE, SERVICE_CODE, SERVICE_NAME FROM tmp_kaspy_%(registry_name)s
+UNION 
+SELECT DISTINCT ORGANIZATION_CODE, SERVICE_CODE, SERVICE_NAME FROM tmp_kaspy_auto_%(registry_name)s$$
+
+
+INSERT INTO service (ORGANIZATION_ID, CODE_KASPY, NAME_KASPY)
+SELECT organization.ORGANIZATION_ID, tmp.SERVICE_CODE, tmp.SERVICE_NAME
+FROM tmp_kaspy_all_services_%(registry_name)s AS tmp
+LEFT JOIN organization ON organization.CODE_KASPY = tmp.ORGANIZATION_CODE
+WHERE tmp.SERVICE_CODE NOT IN (SELECT CODE_KASPY FROM service WHERE CODE_KASPY IS NOT NULL)
+GROUP BY organization.ORGANIZATION_ID, tmp.SERVICE_NAME, tmp.SERVICE_CODE 
+ORDER BY organization.ORGANIZATION_ID, tmp.SERVICE_CODE$$
+
+
+-- --------- Актуализируем ППП ---------------------
+CREATE TEMPORARY TABLE tmp_paynode_%(registry_name)s AS
+SELECT DISTINCT PAYNODE_CODE, PAYNODE_ADDRESS
+FROM tmp_kaspy_%(registry_name)s$$
+
+INSERT INTO paynode (CODE_KASPY, ADDRESS, ADDRESS_KASPY)
+SELECT DISTINCT PAYNODE_CODE, PAYNODE_ADDRESS, PAYNODE_ADDRESS 
+FROM tmp_paynode_%(registry_name)s
+WHERE PAYNODE_CODE NOT IN (SELECT CODE_KASPY FROM paynode WHERE CODE_KASPY IS NOT NULL)
+ORDER BY PAYNODE_CODE$$
+
+UPDATE paynode
+INNER JOIN tmp_paynode_%(registry_name)s ON tmp_paynode_%(registry_name)s.PAYNODE_CODE = paynode.CODE_KASPY 
+SET paynode.ADDRESS_KASPY = tmp_paynode_%(registry_name)s.PAYNODE_ADDRESS$$
+
+
+-- --------- Грузим оплаты ---------------------
+INSERT INTO payment
+(`PAYNUMBER`,`PROG`,`ORDER_TYPE`,STORNO_FOR, `STATUS`,STATUS_TIME, `ACCOUNT`,`FIO`,`ADDRESS`,`ORGANIZATION_ID`,`EXTERNAL_ID`,`EXTERNAL_TIME`,
+`BACKEND_TIME`,`SUMM`,`FEE`,`PAYNODE_ID`,`CASHIER`,`REGISTRY_ID`)
+SELECT 
+tmp.`PAYNUMBER`, 
+2 AS PROG, 
+tmp.ORDER_TYPE,
+tmp.STORNO_FOR,
+tmp.`STATUS`,
+tmp.STATUS_TIME,
+tmp.`ACCOUNT`,
+tmp.`FIO`,
+tmp.`ADDRESS`,
+organization.`ORGANIZATION_ID`, 
+tmp.`EXTERNAL_ID`,
+tmp.`EXTERNAL_TIME`,
+tmp.`BACKEND_TIME`,
+tmp.`TOTAL_SUMM`,
+tmp.`FEE`,
+paynode.`PAYNODE_ID`, 
+tmp.`CASHIER`,
+@registry_id AS `REGISTRY_ID`
+FROM tmp_kaspy_%(registry_name)s AS tmp
+LEFT JOIN organization ON organization.CODE_KASPY=tmp.ORGANIZATION_CODE
+LEFT JOIN paynode ON paynode.CODE_KASPY = tmp.PAYNODE_CODE
+GROUP BY tmp.`PAYNUMBER`$$
+
+
+-- --------- детализацию  грузим 
+INSERT INTO detail
+(`SERVICE_ID`,`PAYMENT_ID`,`SUMM_NF`)
+SELECT service.SERVICE_ID, payment.PAYMENT_ID, tmp.SERVICE_SUMM_NO_FEE
+FROM tmp_kaspy_%(registry_name)s AS tmp
+LEFT JOIN organization ON organization.CODE_KASPY=tmp.ORGANIZATION_CODE
+LEFT JOIN payment ON payment.PAYNUMBER = tmp.PAYNUMBER 
+LEFT JOIN service ON service.CODE_STREAM = tmp.SERVICE_CODE AND service.ORGANIZATION_ID = organization.ORGANIZATION_ID
+WHERE payment.PROG = 2
+AND SERVICE_SUMM_NO_FEE<>0$$
+
+-- тоже самое только из другой таблицы (auto)
+-- TODO подумать как не повторяться
+INSERT INTO detail
+(`SERVICE_ID`,`PAYMENT_ID`,`SUMM_NF`)
+SELECT service.SERVICE_ID, payment.PAYMENT_ID, tmp.SERVICE_SUMM_NO_FEE
+FROM tmp_kaspy_auto_%(registry_name)s AS tmp
+LEFT JOIN organization ON organization.CODE_KASPY=tmp.ORGANIZATION_CODE
+LEFT JOIN payment ON payment.PAYNUMBER = tmp.PAYNUMBER 
+LEFT JOIN service ON service.CODE_STREAM = tmp.SERVICE_CODE AND service.ORGANIZATION_ID = organization.ORGANIZATION_ID
+WHERE payment.PROG = 2
+AND SERVICE_SUMM_NO_FEE<>0$$
+
+
+-- --------- Устанавливаем флаг в "Загружено"--------
+UPDATE registry SET status = 3 WHERE REGISTRY_ID = @registry_id$$
