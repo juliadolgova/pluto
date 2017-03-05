@@ -4,7 +4,6 @@ import os.path
 import pgpxmlrpc
 
 import settings
-import utils
 import dbutils
 
 IMPORT_KASPY_SQL = 'import_kaspy.sql'
@@ -31,17 +30,28 @@ def row_to_line(row):
     return ';'.join(res)
 
 
+def service_to_line(service):
+    """Услугу переданную как словарь представляет в виде строки"""
+    # TODO: Заменять отсутствующие поля на строку r'\N'
+    if service:
+        return u"{};{};{};{}".format(
+            service['code'],
+            service['type'],
+            service['price'],  # Умножать на quant если quant!=1
+            service['name']
+        ).encode('cp1251')
+    else:
+        return r'\N;\N;\N;\N'
+
+
 def save_report_to_file(report_rows, filename):
     with open(filename, 'w') as f:
         for row in report_rows:
-            # payment_line = ';'.join([unicode(item).encode('cp1251') for item in ])
             payment_line = row_to_line(row[:-1])
-            last_field = row[-1] if row[-1] else [[]]
+            last_field = row[-1] if row[-1] else [{}]
             for service in last_field:
-                padded_service = utils.array_pad(service, 4, '\\N')
-                service_line = row_to_line(padded_service)
+                service_line = service_to_line(service)
                 f.write(';'.join([payment_line, service_line]).replace('None', '\\N') + '\n')
-                # f.write(';'.join([payment_line, service_line]) + '\n')
 
 
 def import_kaspy_from_api():
