@@ -6,7 +6,7 @@ import dbutils
 from kaspy import row_to_line
 
 
-EXPORT_DIR = ur'/mnt/mksshare/МКС/@/test/source'
+EXPORT_DIR = settings.EXPORT_DIR
 
 
 def export_table_to_csv(table_name):
