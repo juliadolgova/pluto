@@ -5,7 +5,7 @@ def manage_file_my(fn):
     try:
         manage_file(fn)
     except:
-        print 'error while uploading {]'.format(fn)
+        print 'error while uploading {}'.format(fn)
 
 
 def filter_regs_from_stream_my(message):
