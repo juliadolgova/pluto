@@ -149,7 +149,7 @@ SELECT service.SERVICE_ID, payment.PAYMENT_ID, tmp.SERVICE_SUMM_NO_FEE
 FROM tmp_kaspy_%(registry_name)s AS tmp
 LEFT JOIN organization ON organization.CODE_KASPY=tmp.ORGANIZATION_CODE
 LEFT JOIN payment ON payment.PAYNUMBER = tmp.PAYNUMBER 
-LEFT JOIN service ON service.CODE_STREAM = tmp.SERVICE_CODE AND service.ORGANIZATION_ID = organization.ORGANIZATION_ID
+LEFT JOIN service ON service.CODE_KASPY = tmp.SERVICE_CODE AND service.ORGANIZATION_ID = organization.ORGANIZATION_ID
 WHERE payment.PROG = 2
 AND SERVICE_SUMM_NO_FEE<>0$$
 
