@@ -35,10 +35,10 @@ def service_to_line(service):
     # TODO: Заменять отсутствующие поля на строку r'\N'
     if service:
         return u"{};{};{};{}".format(
-            service['code'],
-            service['type'],
-            service['price'],  # Умножать на quant если quant!=1
-            service['name']
+            service.get('coconut_code') if service.get('coconut_code') else service.get('code'),
+            service.get('type'),
+            service.get('price'),  # Умножать на quant если quant!=1
+            service.get('name')
         ).encode('cp1251')
     else:
         return r'\N;\N;\N;\N'
